@@ -8,9 +8,23 @@
 #include "esphome/components/network/util.h"
 #include "esphome/components/socket/socket.h"
 
+#ifdef USE_ESP32
+#include "esphome/components/uart/uart_component_esp_idf.h"
+extern "C" {
+#include "driver/uart.h"
+#include "freertos/FreeRTOS.h"
+}
+#endif
+
 static const char *TAG = "stream_server";
 
 using namespace esphome;
+
+namespace {
+constexpr uint8_t STREAM_CTRL_PREFIX = 0xFF;
+constexpr uint8_t STREAM_CTRL_BREAK_ON = 0x01;
+constexpr uint8_t STREAM_CTRL_BREAK_OFF = 0x02;
+}
 
 void StreamServerComponent::setup() {
     ESP_LOGCONFIG(TAG, "Setting up stream server...");
@@ -155,9 +169,13 @@ void StreamServerComponent::write() {
     for (Client &client : this->clients_) {
         if (client.disconnected)
             continue;
-
-        while ((read = client.socket->read(&buf, sizeof(buf))) > 0)
-            this->stream_->write_array(buf, read);
+        std::vector<uint8_t> pending;
+        while ((read = client.socket->read(&buf, sizeof(buf))) > 0) {
+            for (ssize_t i = 0; i < read; i++) {
+                this->handle_client_byte(client, buf[i], pending);
+            }
+        }
+        this->flush_pending(pending);
 
         if (read == 0 || errno == ECONNRESET) {
             ESP_LOGD(TAG, "Client %s disconnected", client.identifier.c_str());
@@ -172,3 +190,59 @@ void StreamServerComponent::write() {
 
 StreamServerComponent::Client::Client(std::unique_ptr<esphome::socket::Socket> socket, std::string identifier, size_t position)
     : socket(std::move(socket)), identifier{identifier}, position{position} {}
+
+void StreamServerComponent::flush_pending(std::vector<uint8_t> &buffer) {
+    if (buffer.empty())
+        return;
+    this->stream_->write_array(buffer.data(), buffer.size());
+    buffer.clear();
+}
+
+void StreamServerComponent::handle_client_byte(Client &client, uint8_t byte, std::vector<uint8_t> &buffer) {
+    if (client.control_escape) {
+        client.control_escape = false;
+        if (byte == STREAM_CTRL_PREFIX) {
+            buffer.push_back(STREAM_CTRL_PREFIX);
+        } else if (byte == STREAM_CTRL_BREAK_ON) {
+            this->flush_pending(buffer);
+            this->apply_break(true);
+        } else if (byte == STREAM_CTRL_BREAK_OFF) {
+            this->flush_pending(buffer);
+            this->apply_break(false);
+        } else {
+            ESP_LOGW(TAG, "Unknown control byte 0x%02X from %s", byte, client.identifier.c_str());
+        }
+        return;
+    }
+
+    if (byte == STREAM_CTRL_PREFIX) {
+        client.control_escape = true;
+        return;
+    }
+
+    buffer.push_back(byte);
+}
+
+void StreamServerComponent::apply_break(bool enable) {
+#ifdef USE_ESP32
+    auto *idf_uart = dynamic_cast<uart::IDFUARTComponent *>(this->stream_);
+    if (idf_uart == nullptr) {
+        ESP_LOGW(TAG, "Received break command but UART backend does not support it");
+        return;
+    }
+
+    uart_port_t uart_num = static_cast<uart_port_t>(idf_uart->get_hw_serial_number());
+    esp_err_t err = uart_wait_tx_done(uart_num, pdMS_TO_TICKS(50));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "uart_wait_tx_done failed: %s", esp_err_to_name(err));
+    }
+    err = uart_set_tx_break(uart_num, enable);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "uart_set_tx_break(%s) failed: %s", enable ? "enable" : "disable", esp_err_to_name(err));
+    } else {
+        ESP_LOGD(TAG, "UART break %s", enable ? "enabled" : "disabled");
+    }
+#else
+    ESP_LOGW(TAG, "Break command received but not supported on this platform");
+#endif
+}
