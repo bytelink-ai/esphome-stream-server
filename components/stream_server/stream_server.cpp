@@ -13,6 +13,9 @@
 extern "C" {
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
+#include "hal/uart_ll.h"
+#include "hal/uart_hal.h"
+#include "soc/uart_periph.h"
 }
 #endif
 
@@ -225,9 +228,9 @@ void StreamServerComponent::handle_client_byte(Client &client, uint8_t byte, std
 
 void StreamServerComponent::apply_break(bool enable) {
 #ifdef USE_ESP32
-    auto *idf_uart = dynamic_cast<uart::IDFUARTComponent *>(this->stream_);
+    auto *idf_uart = static_cast<uart::IDFUARTComponent *>(this->stream_);
     if (idf_uart == nullptr) {
-        ESP_LOGW(TAG, "Received break command but UART backend does not support it");
+        ESP_LOGW(TAG, "Received break command but UART backend not available");
         return;
     }
 
@@ -236,12 +239,9 @@ void StreamServerComponent::apply_break(bool enable) {
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "uart_wait_tx_done failed: %s", esp_err_to_name(err));
     }
-    err = uart_set_tx_break(uart_num, enable);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "uart_set_tx_break(%s) failed: %s", enable ? "enable" : "disable", esp_err_to_name(err));
-    } else {
-        ESP_LOGD(TAG, "UART break %s", enable ? "enabled" : "disabled");
-    }
+    uart_dev_t *hw = UART_LL_GET_HW(uart_num);
+    uart_ll_tx_break_enable(hw, enable);
+    ESP_LOGD(TAG, "UART break %s", enable ? "enabled" : "disabled");
 #else
     ESP_LOGW(TAG, "Break command received but not supported on this platform");
 #endif

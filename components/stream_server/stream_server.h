@@ -41,14 +41,13 @@ public:
 protected:
     void publish_sensor();
 
+    struct Client;
+
     void accept();
     void cleanup();
     void read();
     void flush();
     void write();
-    void flush_pending(std::vector<uint8_t> &buffer);
-    void handle_client_byte(Client &client, uint8_t byte, std::vector<uint8_t> &buffer);
-    void apply_break(bool enable);
 
     size_t buf_index(size_t pos) { return pos & (this->buf_size_ - 1); }
     /// Return the number of consecutive elements that are ahead of @p pos in memory.
@@ -63,6 +62,10 @@ protected:
         size_t position{0};
         bool control_escape{false};
     };
+
+    void flush_pending(std::vector<uint8_t> &buffer);
+    void handle_client_byte(Client &client, uint8_t byte, std::vector<uint8_t> &buffer);
+    void apply_break(bool enable);
 
     esphome::uart::UARTComponent *stream_{nullptr};
     uint16_t port_;
