@@ -41,8 +41,6 @@ public:
 protected:
     void publish_sensor();
 
-    struct Client;
-
     void accept();
     void cleanup();
     void read();
